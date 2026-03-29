@@ -7,7 +7,8 @@ import { TokenTracker } from './tokens/budget.js';
 import { FetchCache } from './tokens/cache.js';
 import { PatternLearner } from './patterns/learner.js';
 import { AgentRegistry } from './agents/registry.js';
-import { BaseAgent, type AgentContext } from './agents/base.js';
+import { AgentExecutor } from './agents/executor.js';
+import type { AgentContext } from './agents/base.js';
 import type { SubjectConfig } from './config.js';
 
 const DEFAULT_TOKEN_BUDGET = 50_000;
@@ -84,9 +85,9 @@ export class Orchestrator {
         };
 
         console.log(chalk.blue(`[${type}] Starting research...`));
-        const agent = new BaseAgent(def, ctx);
-        const output = await agent.research();
-        console.log(chalk.green(`[${type}] Found ${output.findings.length} findings (${output.tokensUsed} tokens)`));
+        const executor = new AgentExecutor(def, ctx);
+        const output = await executor.execute();
+        console.log(chalk.green(`[${type}] Found ${output.findings.length} findings (${output.tokensUsed} tokens, ${output.cacheHits} cache hits)`));
         return output.findings;
       })
     );
