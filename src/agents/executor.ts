@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Finding, Source } from '../knowledge/schema.js';
 import type { AgentContext, AgentDefinition, AgentOutput } from './base.js';
-import type { TokenBudget } from '../tokens/budget.js';
+import { webSearch, webFetch } from '../tools/search.js';
 
 /**
  * Agentic executor: runs an agent with tool use in a loop.
@@ -93,7 +93,22 @@ export class AgentExecutor {
   private async executeTool(tool: Anthropic.ToolUseBlock): Promise<string> {
     if (tool.name === 'web_search') {
       const input = tool.input as { query: string };
-      return this.webSearch(input.query);
+      const cacheKey = `search:${input.query}`;
+      const cached = this.ctx.cache.get(cacheKey);
+      if (cached) { this.cacheHits++; return cached; }
+      this.searchCount++;
+      const result = await webSearch(input.query);
+      this.ctx.cache.set(cacheKey, result, 60);
+      return result;
+    }
+    if (tool.name === 'web_fetch') {
+      const input = tool.input as { url: string };
+      const cached = this.ctx.cache.get(input.url);
+      if (cached) { this.cacheHits++; return cached; }
+      this.searchCount++;
+      const result = await webFetch(input.url);
+      this.ctx.cache.set(input.url, result, 60);
+      return result;
     }
     if (tool.name === 'check_knowledge') {
       const input = tool.input as { claim: string };
@@ -102,35 +117,25 @@ export class AgentExecutor {
         this.cacheHits++;
         return `ALREADY KNOWN [${existing.evidence}]: ${existing.claim} (${existing.sources.length} sources)`;
       }
-      return 'NOT FOUND — this is a research gap, proceed with web search.';
+      return 'NOT FOUND — research gap, proceed with web search.';
     }
     return 'Unknown tool';
-  }
-
-  private async webSearch(query: string): Promise<string> {
-    // Check cache first
-    const cacheKey = `search:${query}`;
-    const cached = this.ctx.cache.get(cacheKey);
-    if (cached) {
-      this.cacheHits++;
-      return cached;
-    }
-
-    this.searchCount++;
-
-    // Use Claude's built-in web search via a separate call
-    // In production, this would use a search API (Brave, Google, etc.)
-    // For now, return a placeholder that the agent can work with
-    const result = `[Search results for: "${query}" — use WebSearch tool in Claude Code or integrate a search API]`;
-    this.ctx.cache.set(cacheKey, result, 30);
-    return result;
   }
 
   private tools(): Anthropic.Tool[] {
     return [
       {
+        name: 'check_knowledge',
+        description: 'Check if a claim already exists in the knowledge store. ALWAYS use before web_search.',
+        input_schema: {
+          type: 'object' as const,
+          properties: { claim: { type: 'string', description: 'The claim to check' } },
+          required: ['claim'],
+        },
+      },
+      {
         name: 'web_search',
-        description: 'Search the web. Results are cached — identical queries return cached results.',
+        description: 'Search the web. Results are cached.',
         input_schema: {
           type: 'object' as const,
           properties: { query: { type: 'string', description: 'Search query' } },
@@ -138,12 +143,12 @@ export class AgentExecutor {
         },
       },
       {
-        name: 'check_knowledge',
-        description: 'Check if a claim already exists in the knowledge store. ALWAYS check before searching.',
+        name: 'web_fetch',
+        description: 'Fetch a specific URL and extract text content. Use for primary sources.',
         input_schema: {
           type: 'object' as const,
-          properties: { claim: { type: 'string', description: 'The claim to check' } },
-          required: ['claim'],
+          properties: { url: { type: 'string', description: 'URL to fetch' } },
+          required: ['url'],
         },
       },
     ];
