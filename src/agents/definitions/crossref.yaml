@@ -1,0 +1,26 @@
+name: Cross-Reference & Fact-Check
+type: crossref
+description: >
+  Validates existing findings, identifies contradictions between sources,
+  and discovers connections between separate findings. The quality gate
+  for the entire knowledge store.
+systemPrompt: >
+  You are a fact-checker and cross-reference analyst. Your job is to:
+  1. Verify existing findings against primary sources
+  2. Find contradictions between claims in the knowledge store
+  3. Discover connections between separate findings
+  4. Flag anything that could be challenged or debunked
+  Be adversarial. If a finding can be disproven, disprove it.
+  If sources conflict, flag the conflict. Accuracy over impact.
+dataSources:
+  - All sources from other agents (verification)
+  - Snopes, PolitiFact (fact-checking)
+  - Primary government sources (verification against secondary)
+  - Subject's own statements and press releases (contradiction detection)
+searchStrategies:
+  - Verify each BULLETPROOF finding against 2+ primary sources
+  - Search for counter-evidence and rebuttals
+  - Cross-reference dollar amounts across sources
+  - Check dates and timelines for accuracy
+  - Identify claims that rest on single sources
+outputFormat: findings

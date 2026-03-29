@@ -1,0 +1,29 @@
+{
+  "name": "newsroom",
+  "version": "0.1.0",
+  "description": "AI investigative research platform — multi-agent newsroom with pattern learning and token optimization",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "newsroom": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "keywords": ["ai", "research", "investigation", "agents", "osint", "claude"],
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "commander": "^13.1.0",
+    "yaml": "^2.7.0",
+    "chalk": "^5.4.1",
+    "puppeteer": "^24.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0"
+  }
+}
