@@ -42,10 +42,63 @@ export interface Relationship {
   created: string;
 }
 
+/** Fact-check verdict — institutional-grade assessment of a finding */
+export type VerdictRating = 'CONFIRMED' | 'MOSTLY_TRUE' | 'MIXED' | 'MOSTLY_FALSE' | 'FALSE' | 'UNVERIFIABLE';
+
+export interface AtomicClaim {
+  claim: string;
+  verified: boolean;
+  sources: Source[];
+  counterEvidence?: string;
+  notes?: string;
+}
+
+export interface Verdict {
+  id: string;
+  findingId: string;
+  rating: VerdictRating;
+  confidence: number;
+  /** The original claim decomposed into atomic checkable facts */
+  atomicClaims: AtomicClaim[];
+  /** Independent sources that confirm the finding (not from original) */
+  confirmingSources: Source[];
+  /** Sources/evidence that contradict the finding */
+  counterEvidence: Array<{ claim: string; source: Source; strength: 'strong' | 'moderate' | 'weak' }>;
+  /** Was the claim true but misleading in context? */
+  contextualAnalysis?: string;
+  /** Timeline/number verification notes */
+  verificationNotes: string[];
+  /** Who issued this verdict */
+  agent: string;
+  created: string;
+}
+
+/** Red-team challenge — adversarial stress test of a finding */
+export interface RedTeamChallenge {
+  id: string;
+  findingId: string;
+  /** Alternative explanations for the evidence */
+  alternativeExplanations: Array<{ explanation: string; plausibility: 'high' | 'medium' | 'low' }>;
+  /** Logical fallacies detected in the reasoning */
+  logicalFallacies: Array<{ fallacy: string; description: string }>;
+  /** Bias in source selection */
+  sourceBias?: string;
+  /** The weakest link in the evidence chain */
+  weakestLink: { description: string; recommendation: string };
+  /** Overall survivability — did the finding survive red-teaming? */
+  survived: boolean;
+  /** Recommended evidence grade after red-teaming */
+  recommendedGrade: EvidenceGrade;
+  agent: string;
+  created: string;
+}
+
 export type KnowledgeEntry =
   | { type: 'finding'; data: Finding }
   | { type: 'entity'; data: Entity }
-  | { type: 'relationship'; data: Relationship };
+  | { type: 'relationship'; data: Relationship }
+  | { type: 'verdict'; data: Verdict }
+  | { type: 'redteam'; data: RedTeamChallenge };
 
 export interface ResearchQuestion {
   question: string;

@@ -1,8 +1,6 @@
-import { readFileSync, writeFileSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
 import type { KnowledgeStore } from '../knowledge/store.js';
 import type { Finding } from '../knowledge/schema.js';
+import { escapeHtml } from '../tools/security.js';
 
 export class ReportGenerator {
   constructor(private store: KnowledgeStore) {}
@@ -23,7 +21,7 @@ export class ReportGenerator {
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>${title}</title>
+<title>${escapeHtml(title)}</title>
 <style>
   @page { size: letter; margin: 0.6in 0.7in; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -52,13 +50,13 @@ ${findingSections}
   private renderFinding(f: Finding, num: number): string {
     const badgeClass = f.evidence === 'BULLETPROOF' ? 'b-proof' : f.evidence === 'STRONG' ? 'b-strong' : 'b-circ';
     const sources = f.sources
-      .map(s => `<a href="${s.url}">${s.title || s.url}</a> [${s.grade}]`)
+      .map(s => `<a href="${escapeHtml(s.url)}">${escapeHtml(s.title || s.url)}</a> [${escapeHtml(s.grade)}]`)
       .join(' | ');
 
     return `<div class="page">
-  <h2><span class="num">${String(num).padStart(2, '0')}</span> ${f.claim} <span class="badge ${badgeClass}">${f.evidence}</span></h2>
-  <p>Tags: ${f.tags.join(', ')} | Impact: ${f.impact} | Agent: ${f.agent} | Wave: ${f.wave}</p>
-  ${f.redTeam ? `<p><strong>Red Team:</strong> ${f.redTeam}</p>` : ''}
+  <h2><span class="num">${String(num).padStart(2, '0')}</span> ${escapeHtml(f.claim)} <span class="badge ${badgeClass}">${escapeHtml(f.evidence)}</span></h2>
+  <p>Tags: ${escapeHtml(f.tags.join(', '))} | Impact: ${escapeHtml(f.impact)} | Agent: ${escapeHtml(f.agent)} | Wave: ${f.wave}</p>
+  ${f.redTeam ? `<p><strong>Red Team:</strong> ${escapeHtml(f.redTeam)}</p>` : ''}
   <div class="src">Sources: ${sources}</div>
 </div>`;
   }

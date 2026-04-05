@@ -1,6 +1,7 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
+import { atomicWriteFileSync } from '../utils/fs.js';
 
 interface CacheEntry {
   url: string;
@@ -64,7 +65,7 @@ export class FetchCache {
 
   private persist() {
     const entries = [...this.cache.values()];
-    writeFileSync(join(this.dir, 'index.json'), JSON.stringify(entries, null, 2));
+    atomicWriteFileSync(join(this.dir, 'index.json'), JSON.stringify(entries, null, 2));
   }
 
   stats(): string {

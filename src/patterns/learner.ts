@@ -1,6 +1,8 @@
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import type { Finding } from '../knowledge/schema.js';
+import { extractDomain } from '../utils/similarity.js';
+import { atomicWriteFileSync } from '../utils/fs.js';
 
 interface Pattern {
   category: 'source_reliability' | 'search_strategy' | 'cross_reference' | 'subject_specific';
@@ -40,7 +42,7 @@ export class PatternLearner {
     const sourceGrades = new Map<string, { a: number; b: number; c: number }>();
     for (const f of findings) {
       for (const s of f.sources) {
-        const domain = this.extractDomain(s.url);
+        const domain = extractDomain(s.url);
         const counts = sourceGrades.get(domain) ?? { a: 0, b: 0, c: 0 };
         if (s.grade === 'A') counts.a++;
         else if (s.grade === 'B') counts.b++;
@@ -138,16 +140,8 @@ export class PatternLearner {
       .slice(0, n);
   }
 
-  private extractDomain(url: string): string {
-    try {
-      return new URL(url).hostname.replace('www.', '');
-    } catch {
-      return url;
-    }
-  }
-
   private persist() {
-    writeFileSync(this.rawPath, this.patterns.map(p => JSON.stringify(p)).join('\n') + '\n');
-    writeFileSync(this.patternsPath, this.digest());
+    atomicWriteFileSync(this.rawPath, this.patterns.map(p => JSON.stringify(p)).join('\n') + '\n');
+    atomicWriteFileSync(this.patternsPath, this.digest());
   }
 }

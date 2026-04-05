@@ -3,3 +3,6 @@ dist/
 .newsroom/
 *.tsbuildinfo
 .DS_Store
+.env
+.venv/
+.test-*-tmp/

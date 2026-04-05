@@ -1,23 +1,36 @@
-import { readFileSync, appendFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, appendFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import type { Finding, Entity, Relationship, KnowledgeEntry, EvidenceGrade } from './schema.js';
+import type { Finding, Entity, Relationship, Verdict, RedTeamChallenge, KnowledgeEntry, EvidenceGrade } from './schema.js';
+import { wordSimilarity } from '../utils/similarity.js';
+import { atomicWriteFileSync } from '../utils/fs.js';
 
 export class KnowledgeStore {
   private dir: string;
   private findingsPath: string;
   private entitiesPath: string;
   private relationsPath: string;
+  private verdictsPath: string;
+  private redteamPath: string;
   private indexPath: string;
 
   private findings: Map<string, Finding> = new Map();
   private entities: Map<string, Entity> = new Map();
   private relationships: Map<string, Relationship> = new Map();
+  private verdicts: Map<string, Verdict> = new Map();
+  private redteamChallenges: Map<string, RedTeamChallenge> = new Map();
+
+  // Indexes for O(1) lookups
+  private verdictsByFinding: Map<string, Verdict> = new Map();
+  private challengesByFinding: Map<string, RedTeamChallenge> = new Map();
+  private findingsByTag: Map<string, Set<string>> = new Map();
 
   constructor(projectDir: string) {
     this.dir = join(projectDir, '.newsroom', 'knowledge');
     this.findingsPath = join(this.dir, 'findings.jsonl');
     this.entitiesPath = join(this.dir, 'entities.jsonl');
     this.relationsPath = join(this.dir, 'relationships.jsonl');
+    this.verdictsPath = join(this.dir, 'verdicts.jsonl');
+    this.redteamPath = join(this.dir, 'redteam.jsonl');
     this.indexPath = join(this.dir, 'index.json');
 
     if (!existsSync(this.dir)) mkdirSync(this.dir, { recursive: true });
@@ -28,6 +41,28 @@ export class KnowledgeStore {
     this.findings = this.loadJsonl(this.findingsPath);
     this.entities = this.loadJsonl(this.entitiesPath);
     this.relationships = this.loadJsonl(this.relationsPath);
+    this.verdicts = this.loadJsonl(this.verdictsPath);
+    this.redteamChallenges = this.loadJsonl(this.redteamPath);
+    this.rebuildIndexes();
+  }
+
+  private rebuildIndexes() {
+    this.verdictsByFinding.clear();
+    this.challengesByFinding.clear();
+    this.findingsByTag.clear();
+
+    for (const v of this.verdicts.values()) {
+      this.verdictsByFinding.set(v.findingId, v);
+    }
+    for (const c of this.redteamChallenges.values()) {
+      this.challengesByFinding.set(c.findingId, c);
+    }
+    for (const f of this.findings.values()) {
+      for (const tag of f.tags) {
+        if (!this.findingsByTag.has(tag)) this.findingsByTag.set(tag, new Set());
+        this.findingsByTag.get(tag)!.add(f.id);
+      }
+    }
   }
 
   private loadJsonl<T extends { id: string }>(path: string): Map<string, T> {
@@ -59,6 +94,10 @@ export class KnowledgeStore {
       return false;
     }
     this.findings.set(finding.id, finding);
+    for (const tag of finding.tags) {
+      if (!this.findingsByTag.has(tag)) this.findingsByTag.set(tag, new Set());
+      this.findingsByTag.get(tag)!.add(finding.id);
+    }
     this.append(this.findingsPath, finding);
     return true;
   }
@@ -78,18 +117,11 @@ export class KnowledgeStore {
 
   private findDuplicate(finding: Finding): Finding | undefined {
     for (const existing of this.findings.values()) {
-      if (this.claimSimilarity(existing.claim, finding.claim) > 0.8) {
+      if (wordSimilarity(existing.claim, finding.claim) > 0.8) {
         return existing;
       }
     }
     return undefined;
-  }
-
-  private claimSimilarity(a: string, b: string): number {
-    const wordsA = new Set(a.toLowerCase().split(/\s+/));
-    const wordsB = new Set(b.toLowerCase().split(/\s+/));
-    const intersection = new Set([...wordsA].filter(w => wordsB.has(w)));
-    return intersection.size / Math.max(wordsA.size, wordsB.size);
   }
 
   private shouldUpgrade(existing: Finding, incoming: Finding): boolean {
@@ -98,7 +130,7 @@ export class KnowledgeStore {
   }
 
   private rebuild() {
-    writeFileSync(this.findingsPath, [...this.findings.values()].map(f => JSON.stringify(f)).join('\n') + '\n');
+    atomicWriteFileSync(this.findingsPath, [...this.findings.values()].map(f => JSON.stringify(f)).join('\n') + '\n');
   }
 
   /** L0 summary: ~500 tokens. Used as default agent context. */
@@ -109,6 +141,10 @@ export class KnowledgeStore {
       relationships: this.relationships.size,
       bulletproof: [...this.findings.values()].filter(f => f.evidence === 'BULLETPROOF').length,
       strong: [...this.findings.values()].filter(f => f.evidence === 'STRONG').length,
+      verdicts: this.verdicts.size,
+      confirmed: [...this.verdicts.values()].filter(v => v.rating === 'CONFIRMED').length,
+      challenged: this.redteamChallenges.size,
+      survived: [...this.redteamChallenges.values()].filter(c => c.survived).length,
     };
     const topFindings = [...this.findings.values()]
       .sort((a, b) => {
@@ -116,12 +152,21 @@ export class KnowledgeStore {
         return grades.indexOf(b.evidence) - grades.indexOf(a.evidence);
       })
       .slice(0, 10)
-      .map(f => `- [${f.evidence}] ${f.claim}`)
+      .map(f => {
+        const verdict = this.getVerdict(f.id);
+        const rt = this.getRedTeamChallenge(f.id);
+        const badges = [
+          verdict ? `FC:${verdict.rating}` : null,
+          rt ? (rt.survived ? 'RT:SURVIVED' : 'RT:FAILED') : null,
+        ].filter(Boolean).join(' ');
+        return `- [${f.evidence}] ${f.claim}${badges ? ` (${badges})` : ''}`;
+      })
       .join('\n');
 
     return `# Knowledge Store Summary
 Findings: ${stats.findings} (${stats.bulletproof} bulletproof, ${stats.strong} strong)
 Entities: ${stats.entities} | Relationships: ${stats.relationships}
+Fact-checks: ${stats.verdicts} (${stats.confirmed} confirmed) | Red-team: ${stats.challenged} (${stats.survived} survived)
 
 ## Top Findings
 ${topFindings}`;
@@ -157,6 +202,43 @@ ${topFindings}`;
     return [...this.relationships.values()];
   }
 
+  addVerdict(verdict: Verdict): boolean {
+    this.verdicts.set(verdict.id, verdict);
+    this.verdictsByFinding.set(verdict.findingId, verdict);
+    this.append(this.verdictsPath, verdict);
+    return true;
+  }
+
+  addRedTeamChallenge(challenge: RedTeamChallenge): boolean {
+    this.redteamChallenges.set(challenge.id, challenge);
+    this.challengesByFinding.set(challenge.findingId, challenge);
+    this.append(this.redteamPath, challenge);
+    return true;
+  }
+
+  getVerdict(findingId: string): Verdict | undefined {
+    return this.verdictsByFinding.get(findingId);
+  }
+
+  getRedTeamChallenge(findingId: string): RedTeamChallenge | undefined {
+    return this.challengesByFinding.get(findingId);
+  }
+
+  /** Get all findings with a specific tag — O(1) lookup */
+  findingsByTagIndex(tag: string): Finding[] {
+    const ids = this.findingsByTag.get(tag);
+    if (!ids) return [];
+    return [...ids].map(id => this.findings.get(id)!).filter(Boolean);
+  }
+
+  allVerdicts(): Verdict[] {
+    return [...this.verdicts.values()];
+  }
+
+  allRedTeamChallenges(): RedTeamChallenge[] {
+    return [...this.redteamChallenges.values()];
+  }
+
   /** Check what's stale and needs re-verification */
   staleFindings(): Finding[] {
     const now = new Date();
@@ -187,6 +269,6 @@ ${topFindings}`;
       ),
       updated: new Date().toISOString(),
     };
-    writeFileSync(this.indexPath, JSON.stringify(index, null, 2));
+    atomicWriteFileSync(this.indexPath, JSON.stringify(index, null, 2));
   }
 }

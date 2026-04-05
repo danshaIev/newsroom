@@ -23,7 +23,7 @@ export interface ProjectConfig {
 
 const DEFAULT_SETTINGS: ProjectConfig['settings'] = {
   defaultTokenBudget: 50_000,
-  defaultAgents: ['finint', 'osint', 'legint', 'temporal'],
+  defaultAgents: ['finint', 'osint', 'legint', 'temporal', 'netmap', 'regint'],
   staleAfterDays: 30,
   model: 'claude-sonnet-4-20250514',
 };
@@ -32,6 +32,7 @@ export function initProject(dir: string, subject: SubjectConfig): ProjectConfig 
   const newsroomDir = join(dir, '.newsroom');
   mkdirSync(join(newsroomDir, 'knowledge'), { recursive: true });
   mkdirSync(join(newsroomDir, 'cache'), { recursive: true });
+  mkdirSync(join(newsroomDir, 'profiles'), { recursive: true });
 
   const config: ProjectConfig = {
     subject,

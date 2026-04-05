@@ -1,7 +1,12 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { Finding, Source } from '../knowledge/schema.js';
+import type { Finding } from '../knowledge/schema.js';
 import type { AgentContext, AgentDefinition, AgentOutput } from './base.js';
 import { webSearch, webFetch } from '../tools/search.js';
+import { crawl4aiPooledScrape } from '../tools/crawl4ai.js';
+import { youSearch, youResearch } from '../tools/youcom.js';
+import { extractPdf } from '../tools/pdf-extract.js';
+import { parseFindings } from '../utils/parsing.js';
+import { toolInput, assertString, assertOptionalString, assertOptionalBoolean, assertEnum, ToolInputError } from '../utils/validate.js';
 
 /**
  * Agentic executor: runs an agent with tool use in a loop.
@@ -38,7 +43,7 @@ export class AgentExecutor {
       iterations++;
 
       const response = await this.ctx.client.messages.create({
-        model: 'claude-sonnet-4-20250514',
+        model: this.ctx.model,
         max_tokens: 4096,
         system,
         messages,
@@ -77,7 +82,11 @@ export class AgentExecutor {
         (b): b is Anthropic.TextBlock => b.type === 'text'
       );
       const text = textBlocks.map(b => b.text).join('');
-      findings = this.parseFindings(text);
+      findings = parseFindings(text, {
+        agentType: this.def.type,
+        wave: this.ctx.wave,
+        nextId: () => this.ctx.knowledge.nextFindingId(),
+      });
 
       if (response.stop_reason === 'end_turn') break;
     }
@@ -91,35 +100,94 @@ export class AgentExecutor {
   }
 
   private async executeTool(tool: Anthropic.ToolUseBlock): Promise<string> {
-    if (tool.name === 'web_search') {
-      const input = tool.input as { query: string };
-      const cacheKey = `search:${input.query}`;
-      const cached = this.ctx.cache.get(cacheKey);
-      if (cached) { this.cacheHits++; return cached; }
-      this.searchCount++;
-      const result = await webSearch(input.query);
-      this.ctx.cache.set(cacheKey, result, 60);
-      return result;
-    }
-    if (tool.name === 'web_fetch') {
-      const input = tool.input as { url: string };
-      const cached = this.ctx.cache.get(input.url);
-      if (cached) { this.cacheHits++; return cached; }
-      this.searchCount++;
-      const result = await webFetch(input.url);
-      this.ctx.cache.set(input.url, result, 60);
-      return result;
-    }
-    if (tool.name === 'check_knowledge') {
-      const input = tool.input as { claim: string };
-      const existing = this.ctx.delta.claimExists(input.claim);
-      if (existing) {
-        this.cacheHits++;
-        return `ALREADY KNOWN [${existing.evidence}]: ${existing.claim} (${existing.sources.length} sources)`;
+    try {
+      const inp = toolInput(tool.input);
+
+      if (tool.name === 'web_search') {
+        const query = assertString(inp.query, 'query');
+        const cacheKey = `search:${query}`;
+        const cached = this.ctx.cache.get(cacheKey);
+        if (cached) { this.cacheHits++; return cached; }
+        this.searchCount++;
+        const result = await webSearch(query);
+        this.ctx.cache.set(cacheKey, result, 60);
+        return result;
       }
-      return 'NOT FOUND — research gap, proceed with web search.';
+      if (tool.name === 'web_fetch') {
+        const url = assertString(inp.url, 'url');
+        const cached = this.ctx.cache.get(url);
+        if (cached) { this.cacheHits++; return cached; }
+        this.searchCount++;
+        const result = await webFetch(url);
+        this.ctx.cache.set(url, result, 60);
+        return result;
+      }
+      if (tool.name === 'web_scrape') {
+        const url = assertString(inp.url, 'url');
+        const onlyMainContent = assertOptionalBoolean(inp.onlyMainContent, 'onlyMainContent') ?? true;
+        const cacheKey = `scrape:${url}`;
+        const cached = this.ctx.cache.get(cacheKey);
+        if (cached) { this.cacheHits++; return cached; }
+        this.searchCount++;
+        const result = await crawl4aiPooledScrape(url, { onlyMainContent });
+        const content = result.error
+          ? `[Scrape error: ${result.error}]`
+          : `# ${result.title ?? ''}\n\n${result.markdown}`;
+        this.ctx.cache.set(cacheKey, content, 60);
+        return content;
+      }
+      if (tool.name === 'you_search') {
+        const query = assertString(inp.query, 'query');
+        const searchType = assertEnum(inp.searchType, 'searchType', ['web', 'news'] as const);
+        const cacheKey = `you:${query}:${searchType ?? 'web'}`;
+        const cached = this.ctx.cache.get(cacheKey);
+        if (cached) { this.cacheHits++; return cached; }
+        this.searchCount++;
+        const result = await youSearch(query, { searchType });
+        this.ctx.cache.set(cacheKey, result, 60);
+        return result;
+      }
+      if (tool.name === 'deep_research') {
+        const query = assertString(inp.query, 'query');
+        const effort = assertEnum(inp.effort, 'effort', ['lite', 'standard', 'deep', 'exhaustive'] as const);
+        const cacheKey = `research:${query}:${effort ?? 'deep'}`;
+        const cached = this.ctx.cache.get(cacheKey);
+        if (cached) { this.cacheHits++; return cached; }
+        this.searchCount++;
+        const result = await youResearch(query, { effort });
+        const formatted = `${result.answer}\n\nCitations:\n${result.citations.map(c => `- ${c.title}: ${c.url}`).join('\n')}`;
+        this.ctx.cache.set(cacheKey, formatted, 120);
+        return formatted;
+      }
+      if (tool.name === 'pdf_extract') {
+        const source = assertString(inp.source, 'source');
+        const cacheKey = `pdf:${source}`;
+        const cached = this.ctx.cache.get(cacheKey);
+        if (cached) { this.cacheHits++; return cached; }
+        this.searchCount++;
+        const result = await extractPdf(source);
+        const content = result.error
+          ? `[PDF error: ${result.error}]`
+          : `[${result.pages} pages]\n\n${result.text}`;
+        this.ctx.cache.set(cacheKey, content, 120);
+        return content;
+      }
+      if (tool.name === 'check_knowledge') {
+        const claim = assertString(inp.claim, 'claim');
+        const existing = this.ctx.delta.claimExists(claim);
+        if (existing) {
+          this.cacheHits++;
+          return `ALREADY KNOWN [${existing.evidence}]: ${existing.claim} (${existing.sources.length} sources)`;
+        }
+        return 'NOT FOUND — research gap, proceed with web search.';
+      }
+      return 'Unknown tool';
+    } catch (e) {
+      if (e instanceof ToolInputError) {
+        return `[Tool input error: ${e.message}]`;
+      }
+      throw e;
     }
-    return 'Unknown tool';
   }
 
   private tools(): Anthropic.Tool[] {
@@ -144,17 +212,70 @@ export class AgentExecutor {
       },
       {
         name: 'web_fetch',
-        description: 'Fetch a specific URL and extract text content. Use for primary sources.',
+        description: 'Quick fetch a URL (raw text, no JS). Use web_scrape for better results on complex pages.',
         input_schema: {
           type: 'object' as const,
           properties: { url: { type: 'string', description: 'URL to fetch' } },
           required: ['url'],
         },
       },
+      {
+        name: 'web_scrape',
+        description: 'Deep scrape a URL using a headless browser. Returns clean markdown with JS-rendered content. Use this for complex pages, SPAs, and pages with dynamic content. Slower than web_fetch but much higher quality.',
+        input_schema: {
+          type: 'object' as const,
+          properties: {
+            url: { type: 'string', description: 'URL to scrape' },
+            onlyMainContent: { type: 'boolean', description: 'Strip navigation/ads, keep only main content (default: true)' },
+          },
+          required: ['url'],
+        },
+      },
+      {
+        name: 'you_search',
+        description: 'Search via You.com — better than web_search for investigative queries. Supports news-specific search. Use for finding recent news, filtering by topic, and investigative queries.',
+        input_schema: {
+          type: 'object' as const,
+          properties: {
+            query: { type: 'string', description: 'Search query' },
+            searchType: { type: 'string', enum: ['web', 'news'], description: 'Search type: web (default) or news for recent coverage' },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'deep_research',
+        description: 'AI-powered deep research via You.com. Returns a synthesized answer with citations. Use for complex investigative questions that need multi-source synthesis. Much more thorough than basic search — use when you need a comprehensive answer, not just links.',
+        input_schema: {
+          type: 'object' as const,
+          properties: {
+            query: { type: 'string', description: 'Research question — be specific and detailed' },
+            effort: { type: 'string', enum: ['lite', 'standard', 'deep', 'exhaustive'], description: 'Research depth: lite (fast) → exhaustive (thorough). Default: deep' },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'pdf_extract',
+        description: 'Extract text from a PDF file (URL or local path). Use for SEC filings, financial disclosures, court documents, government reports. Returns full text content.',
+        input_schema: {
+          type: 'object' as const,
+          properties: {
+            source: { type: 'string', description: 'PDF URL (https://...) or local file path' },
+          },
+          required: ['source'],
+        },
+      },
     ];
   }
 
   private buildSystem(knowledge: string, patterns: string): string {
+    const skillContext = this.ctx.skills.buildSkillContext(
+      this.def.type,
+      this.ctx.focus,
+      this.ctx.focus ? [this.ctx.focus] : undefined
+    );
+
     return `You are a ${this.def.type} research agent. ${this.def.description}
 
 ## CRITICAL: Token Efficiency Rules
@@ -162,6 +283,9 @@ export class AgentExecutor {
 2. Return findings as JSON array — no prose summaries
 3. Stop when you have strong findings or budget is low
 4. Each finding: { "claim": "...", "evidence": "STRONG|BULLETPROOF|CIRCUMSTANTIAL|DEVELOPING", "impact": "CRITICAL|HIGH|MODERATE|LOW", "sources": [{"url": "...", "title": "...", "grade": "A|B|C"}], "tags": ["tag1"] }
+5. Use web_scrape for important primary sources (government databases, SEC filings, court records). Use web_fetch for quick checks.
+6. Use deep_research for complex questions that need multi-source synthesis (e.g., "What are the financial ties between X and Y?"). It returns citations.
+7. Use you_search with searchType:"news" for recent news coverage. Use web_search for general queries.
 
 ## Data Sources
 ${this.def.dataSources.map(d => `- ${d}`).join('\n')}
@@ -173,7 +297,9 @@ ${this.def.searchStrategies.map(s => `- ${s}`).join('\n')}
 ${knowledge}
 
 ## Learned Patterns
-${patterns}`;
+${patterns}
+
+${skillContext}`;
   }
 
   private buildPrompt(gaps: Array<{ question: string }>): string {
@@ -189,41 +315,4 @@ ${gapList}
 Use check_knowledge before web_search. Return findings as JSON array when done.`;
   }
 
-  private parseFindings(text: string): Finding[] {
-    try {
-      const jsonMatch = text.match(/\[[\s\S]*\]/);
-      if (!jsonMatch) return [];
-      const raw = JSON.parse(jsonMatch[0]) as Array<{
-        claim: string;
-        evidence?: string;
-        impact?: string;
-        sources?: Array<{ url: string; title?: string; grade?: string }>;
-        tags?: string[];
-        redTeam?: string;
-      }>;
-
-      return raw.map(r => ({
-        id: this.ctx.knowledge.nextFindingId(),
-        claim: r.claim,
-        evidence: (r.evidence || 'DEVELOPING') as Finding['evidence'],
-        impact: (r.impact || 'MODERATE') as Finding['impact'],
-        sources: (r.sources || []).map(s => ({
-          url: s.url,
-          title: s.title || '',
-          accessed: new Date().toISOString(),
-          grade: (s.grade || 'B') as Source['grade'],
-        })),
-        agent: this.def.type,
-        wave: this.ctx.wave,
-        created: new Date().toISOString(),
-        updated: new Date().toISOString(),
-        staleAfter: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-        tags: r.tags || [],
-        relatedFindings: [],
-        redTeam: r.redTeam,
-      }));
-    } catch {
-      return [];
-    }
-  }
 }

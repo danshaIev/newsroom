@@ -1,5 +1,6 @@
 import type { KnowledgeStore } from './store.js';
 import type { ResearchQuestion, Finding } from './schema.js';
+import { wordSimilarity } from '../utils/similarity.js';
 
 /**
  * Computes what we DON'T know yet — the research delta.
@@ -22,7 +23,7 @@ export class DeltaComputer {
   /** Check if a claim already exists in the store */
   claimExists(claim: string): Finding | undefined {
     return this.store.allFindings().find(f =>
-      this.similarity(f.claim, claim) > 0.7
+      wordSimilarity(f.claim, claim) > 0.7
     );
   }
 
@@ -39,18 +40,11 @@ export class DeltaComputer {
   }
 
   private coversQuestion(finding: Finding, question: ResearchQuestion): boolean {
-    return this.similarity(finding.claim, question.question) > 0.5 ||
+    return wordSimilarity(finding.claim, question.question) > 0.5 ||
       question.existingFindings.includes(finding.id);
   }
 
   private isStrongEnough(finding: Finding): boolean {
     return finding.evidence === 'BULLETPROOF' || finding.evidence === 'STRONG';
-  }
-
-  private similarity(a: string, b: string): number {
-    const wordsA = new Set(a.toLowerCase().split(/\s+/));
-    const wordsB = new Set(b.toLowerCase().split(/\s+/));
-    const intersection = new Set([...wordsA].filter(w => wordsB.has(w)));
-    return intersection.size / Math.max(wordsA.size, wordsB.size);
   }
 }

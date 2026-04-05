@@ -1,11 +1,13 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { Finding, Source } from '../knowledge/schema.js';
+import type { Finding } from '../knowledge/schema.js';
 import type { KnowledgeStore } from '../knowledge/store.js';
 import type { TokenBudget } from '../tokens/budget.js';
 import type { ContextBuilder } from '../tokens/context.js';
 import type { FetchCache } from '../tokens/cache.js';
 import type { DeltaComputer } from '../knowledge/delta.js';
 import type { PatternLearner } from '../patterns/learner.js';
+import type { SkillEngine } from '../learning/skills.js';
+import { parseFindings } from '../utils/parsing.js';
 
 export interface AgentDefinition {
   name: string;
@@ -21,10 +23,12 @@ export interface AgentContext {
   subject: string;
   focus?: string;
   wave: number;
+  model: string;
   knowledge: KnowledgeStore;
   contextBuilder: ContextBuilder;
   delta: DeltaComputer;
   patterns: PatternLearner;
+  skills: SkillEngine;
   budget: TokenBudget;
   cache: FetchCache;
   client: Anthropic;
@@ -59,7 +63,7 @@ export class BaseAgent {
     const userPrompt = this.buildUserPrompt();
 
     const response = await this.ctx.client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: this.ctx.model,
       max_tokens: 4096,
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],
@@ -69,7 +73,7 @@ export class BaseAgent {
     const tokensUsed = (response.usage?.input_tokens ?? 0) + (response.usage?.output_tokens ?? 0);
     this.ctx.budget.track('research', tokensUsed);
 
-    const findings = this.parseFindings(response);
+    const findings = this.parseFindingsFromResponse(response);
 
     return {
       findings,
@@ -126,44 +130,16 @@ Return your findings as a JSON array. Each finding: { "claim": "...", "evidence"
     ];
   }
 
-  protected parseFindings(response: Anthropic.Message): Finding[] {
+  protected parseFindingsFromResponse(response: Anthropic.Message): Finding[] {
     const text = response.content
       .filter((b): b is Anthropic.TextBlock => b.type === 'text')
       .map(b => b.text)
       .join('');
 
-    try {
-      const jsonMatch = text.match(/\[[\s\S]*\]/);
-      if (!jsonMatch) return [];
-      const raw = JSON.parse(jsonMatch[0]) as Array<{
-        claim: string;
-        evidence: string;
-        impact?: string;
-        sources: Array<{ url: string; title?: string; grade?: string }>;
-        tags?: string[];
-      }>;
-
-      return raw.map((r, i) => ({
-        id: this.ctx.knowledge.nextFindingId(),
-        claim: r.claim,
-        evidence: (r.evidence || 'DEVELOPING') as Finding['evidence'],
-        impact: (r.impact || 'MODERATE') as Finding['impact'],
-        sources: r.sources.map(s => ({
-          url: s.url,
-          title: s.title || '',
-          accessed: new Date().toISOString(),
-          grade: (s.grade || 'B') as Source['grade'],
-        })),
-        agent: this.def.type,
-        wave: this.ctx.wave,
-        created: new Date().toISOString(),
-        updated: new Date().toISOString(),
-        staleAfter: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-        tags: r.tags || [],
-        relatedFindings: [],
-      }));
-    } catch {
-      return [];
-    }
+    return parseFindings(text, {
+      agentType: this.def.type,
+      wave: this.ctx.wave,
+      nextId: () => this.ctx.knowledge.nextFindingId(),
+    });
   }
 }
